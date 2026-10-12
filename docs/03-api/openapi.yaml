@@ -1,44 +1,79 @@
 openapi: 3.0.3
 info:
   title: ГИС «Господдержка» — API модуля распределения субсидий
-  description: REST API для подачи заявок, автозаполнения по ИНН, автоматического скоринга и принятия решений оператором.
-  version: 1.0.0
+  description: >-
+    REST API учебного проекта для подачи заявок, получения сведений о предприятиях,
+    просмотра результатов проверок и скоринга, а также фиксации решений оператора.
+    Интеграции с внешними реестрами и смежными модулями выполняются серверной частью.
+  version: 1.1.0
+
 servers:
-  - url: https://api.gospodderzhka.gov.ru/v1
-    description: Production API Server
-  - url: http://localhost:8080/v1
-    description: Local Mock Server
+  - url: https://api.gospodderzhka.example/api/v1
+    description: Условный адрес API учебного проекта
+  - url: http://localhost:8080/api/v1
+    description: Локальный сервер разработки
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Companies
+    description: Получение сведений о предприятиях
+  - name: Applications
+    description: Создание и просмотр заявок
+  - name: Checks
+    description: Результаты автоматических проверок
+  - name: Scoring
+    description: Результаты скоринговой оценки
+  - name: Decisions
+    description: Решения оператора
 
 paths:
   /companies/suggest:
     get:
-      summary: Автоподтягивание данных компании из ЕГРЮЛ по ИНН
-      description: Возвращает данные профиля юрлица из внешнего реестра ФНС для автозаполнения 70% полей формы.
+      tags: [Companies]
+      summary: Получить сведения о предприятии по ИНН
+      description: >-
+        Возвращает сведения из ЕГРЮЛ для предварительного заполнения формы.
+        Заявитель должен проверить полученные сведения перед отправкой заявки.
+      operationId: suggestCompany
       parameters:
         - name: inn
           in: query
           required: true
-          description: ИНН юридического лица (10 цифр)
+          description: ИНН российского юридического лица (10 цифр)
           schema:
             type: string
-            pattern: '^\d{10}$'
-            example: "7701234567"
+            pattern: '^[0-9]{10}$'
+            example: '7701234567'
       responses:
         '200':
-          description: Данные компании успешно найдены
+          description: Сведения о предприятии получены
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/CompanySuggestResponse'
         '400':
-          description: Некорректный формат ИНН
+          $ref: '#/components/responses/BadRequest'
         '404':
-          description: Компания с указанным ИНН не найдена в ЕГРЮЛ
+          $ref: '#/components/responses/NotFound'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
 
   /applications:
     post:
-      summary: Подача заявки на получение субсидии
-      description: Создает новую заявку и запускает асинхронный процесс проверки стоп-факторов и AI-скоринга.
+      tags: [Applications]
+      summary: Создать и отправить заявку
+      description: >-
+        Создаёт заявку, сохраняет её и запускает асинхронную обработку.
+        Автоматические проверки выполняются после принятия заявки.
+      operationId: createApplication
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -47,62 +82,157 @@ paths:
               $ref: '#/components/schemas/ApplicationCreateRequest'
       responses:
         '201':
-          description: Заявка успешно создана и принята в обработку
+          description: Заявка создана и принята в обработку
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationCreateResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '422':
-          description: Ошибка валидации бизнес-правил (например, неподдерживаемый ОКВЭД)
+          $ref: '#/components/responses/ValidationError'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
 
     get:
-      summary: Получение списка заявок для дашборда оператора
+      tags: [Applications]
+      summary: Получить список доступных заявок
+      description: >-
+        Возвращает список заявок, доступных авторизованному пользователю
+        в соответствии с его ролью и полномочиями.
+      operationId: listApplications
       parameters:
         - name: status
           in: query
           required: false
-          description: Фильтр по статусу заявки
+          description: Фильтр по текущему статусу заявки
           schema:
-            type: string
-            enum: [SUBMITTED, UNDER_MANUAL_REVIEW, RECOMMENDED_APPROVE, APPROVED, REJECTED_AUTO, REJECTED_MANUAL]
+            $ref: '#/components/schemas/ApplicationStatus'
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
       responses:
         '200':
           description: Список заявок
           content:
             application/json:
               schema:
+                $ref: '#/components/schemas/ApplicationListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+
+  /applications/{id}:
+    get:
+      tags: [Applications]
+      summary: Получить карточку заявки
+      operationId: getApplication
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      responses:
+        '200':
+          description: Карточка заявки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationDetails'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+
+  /applications/{id}/checks:
+    get:
+      tags: [Checks]
+      summary: Получить историю автоматических проверок заявки
+      description: >-
+        Возвращает результаты проверок, включая технические ошибки и повторные попытки.
+        Ошибка интеграции не считается отрицательным результатом проверки.
+      operationId: listApplicationChecks
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      responses:
+        '200':
+          description: История проверок
+          content:
+            application/json:
+              schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/ApplicationListItem'
+                  $ref: '#/components/schemas/ApplicationCheck'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
 
   /applications/{id}/scoring:
     get:
-      summary: Получение аналитического заключения скоринга
+      tags: [Scoring]
+      summary: Получить результат скоринговой оценки
+      operationId: getScoringResult
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+        - $ref: '#/components/parameters/ApplicationId'
       responses:
         '200':
-          description: Детальный отчет по рискам и скорингу
+          description: Результат скоринга
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ScoringResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Скоринговая оценка ещё не завершена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
 
   /applications/{id}/decision:
     post:
-      summary: Фиксация решения оператора Минпромторга
+      tags: [Decisions]
+      summary: Зафиксировать решение оператора
+      description: >-
+        Сохраняет решение уполномоченного оператора и обновляет статус заявки.
+        Идентификатор оператора берётся сервером из контекста аутентификации.
+        Для отклонения и возврата на доработку необходимо указать комментарий.
+      operationId: decideApplication
       parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
+        - $ref: '#/components/parameters/ApplicationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -111,82 +241,284 @@ paths:
               $ref: '#/components/schemas/OperatorDecisionRequest'
       responses:
         '200':
-          description: Решение успешно зафиксировано, статус заявки обновлен
+          description: Решение сохранено
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperatorDecisionResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Решение недопустимо для текущего статуса заявки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+
+  /applications/{id}/resubmit:
+    post:
+      tags: [Applications]
+      summary: Повторно отправить заявку после доработки
+      description: >-
+        Сохраняет исправленные данные, фиксирует изменение и запускает необходимые
+        проверки повторно. Допускается только для заявки в статусе NEEDS_REVISION.
+      operationId: resubmitApplication
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplicationResubmissionRequest'
+      responses:
+        '202':
+          description: Повторная отправка принята в обработку
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationCreateResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Заявка не находится в статусе NEEDS_REVISION
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    ApplicationId:
+      name: id
+      in: path
+      required: true
+      description: UUID заявки
+      schema:
+        type: string
+        format: uuid
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Необязательный ключ для безопасного повтора запроса без дублирования операции.
+        Сервер должен сохранять и проверять ключ в пределах согласованного срока.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Требуется аутентификация
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Недостаточно прав для выполнения операции
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Ресурс не найден или недоступен пользователю
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Конфликт состояния или повторного запроса
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ValidationError:
+      description: Ошибка валидации данных
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    BadGateway:
+      description: Внешний сервис вернул ошибку или недопустимый ответ
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnexpectedError:
+      description: Непредвиденная ошибка сервера
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
   schemas:
+    ApplicationStatus:
+      type: string
+      description: Текущий статус заявки
+      enum:
+        - DRAFT
+        - SUBMITTED
+        - DATA_CHECK
+        - NEEDS_REVISION
+        - UNDER_REVIEW
+        - APPROVED
+        - REJECTED
+
     CompanySuggestResponse:
       type: object
+      required: [inn, name]
       properties:
         inn:
           type: string
-          example: "7701234567"
+          pattern: '^[0-9]{10}$'
+          example: '7701234567'
         kpp:
           type: string
-          example: "770101001"
+          nullable: true
+          example: '770101001'
         ogrn:
           type: string
-          example: "1027700123456"
+          nullable: true
+          example: '1027700123456'
         name:
           type: string
-          example: "ООО \"Завод Промышленных Машин\""
+          example: ООО Завод Промышленных Машин
         legal_address:
           type: string
-          example: "101000, г. Москва, ул. Заводская, д. 12"
-        ceo_name:
-          type: string
-          example: "Иванов Пётр Сергеевич"
+          nullable: true
+          example: '101000, г. Москва, ул. Заводская, д. 12'
         okved:
           type: string
-          example: "28.11"
+          nullable: true
+          example: '28.11'
         revenue_last_year:
           type: number
+          format: double
+          minimum: 0
+          nullable: true
           example: 450000000.00
 
     ApplicationCreateRequest:
       type: object
-      required:
-        - inn
-        - subsidy_type
-        - requested_amount
-        - project_title
+      required: [inn, subsidy_type, requested_amount, project_title]
       properties:
         inn:
           type: string
-          example: "7701234567"
+          pattern: '^[0-9]{10}$'
+          example: '7701234567'
         subsidy_type:
           type: string
-          example: "Субсидирование процентной ставки"
+          minLength: 1
+          maxLength: 100
+          example: Субсидирование процентной ставки
         requested_amount:
           type: number
+          format: double
+          minimum: 0.01
           example: 50000000.00
         project_title:
           type: string
-          example: "Модернизация литейного цеха №3"
+          minLength: 1
+          maxLength: 255
+          example: Модернизация литейного цеха №3
         project_description:
           type: string
-          example: "Закупка высокоточных станков с ЧПУ отечественного производства"
+          nullable: true
+          example: Закупка высокоточных станков с ЧПУ отечественного производства
+
+    ApplicationResubmissionRequest:
+      type: object
+      required: [subsidy_type, requested_amount, project_title]
+      properties:
+        subsidy_type:
+          type: string
+          minLength: 1
+          maxLength: 100
+        requested_amount:
+          type: number
+          format: double
+          minimum: 0.01
+        project_title:
+          type: string
+          minLength: 1
+          maxLength: 255
+        project_description:
+          type: string
+          nullable: true
 
     ApplicationCreateResponse:
       type: object
+      required: [application_id, application_number, status, created_at]
       properties:
         application_id:
           type: string
           format: uuid
-          example: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+          example: a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
         application_number:
           type: string
-          example: "APP-2026-008923"
+          example: APP-2026-008923
         status:
-          type: string
-          example: "SUBMITTED"
+          $ref: '#/components/schemas/ApplicationStatus'
         created_at:
           type: string
           format: date-time
-          example: "2026-10-12T14:30:00Z"
+          example: '2026-10-12T14:30:00Z'
+
+    ApplicationListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApplicationListItem'
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+        total:
+          type: integer
+          minimum: 0
 
     ApplicationListItem:
       type: object
+      required: [application_id, application_number, requested_amount, status, created_at]
       properties:
         application_id:
           type: string
@@ -197,54 +529,222 @@ components:
           type: string
         requested_amount:
           type: number
+          format: double
         score_value:
           type: integer
-        status:
+          minimum: 0
+          maximum: 100
+          nullable: true
+        recommendation:
           type: string
+          enum: [REJECT, MANUAL_REVIEW, APPROVE]
+          nullable: true
+        status:
+          $ref: '#/components/schemas/ApplicationStatus'
+        created_at:
+          type: string
+          format: date-time
+
+    ApplicationDetails:
+      allOf:
+        - $ref: '#/components/schemas/ApplicationListItem'
+        - type: object
+          properties:
+            company_inn:
+              type: string
+              pattern: '^[0-9]{10}$'
+            subsidy_type:
+              type: string
+            project_title:
+              type: string
+            project_description:
+              type: string
+              nullable: true
+            updated_at:
+              type: string
+              format: date-time
+            rejection_reason:
+              type: string
+              nullable: true
+
+    ApplicationCheck:
+      type: object
+      required: [check_id, check_code, provider, check_status, attempt_number, created_at]
+      properties:
+        check_id:
+          type: integer
+          format: int64
+        check_code:
+          type: string
+          example: BR-STOP-01
+        provider:
+          type: string
+          example: FNS
+        check_status:
+          type: string
+          enum: [PENDING, PASSED, STOP_FACTOR, ERROR]
+        result_data:
+          type: object
+          nullable: true
+          additionalProperties: true
+        error_code:
+          type: string
+          nullable: true
+        error_message:
+          type: string
+          nullable: true
+        attempt_number:
+          type: integer
+          minimum: 1
+        checked_at:
+          type: string
+          format: date-time
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
 
     ScoringResult:
       type: object
+      required: [application_id, score_value, recommendation, calculated_at]
       properties:
         application_id:
           type: string
           format: uuid
         score_value:
           type: integer
+          minimum: 0
+          maximum: 100
           example: 92
         recommendation:
           type: string
-          example: "RECOMMENDED_APPROVE"
-        stop_factors:
-          type: array
-          items:
-            type: string
-          example: []
+          enum: [REJECT, MANUAL_REVIEW, APPROVE]
+          example: APPROVE
+        model_version:
+          type: string
+          nullable: true
+          example: scoring-model-1.0
         risk_assessment:
           type: object
-          properties:
-            bankruptcy_risk:
-              type: string
-              example: "LOW"
-            tax_compliance_risk:
-              type: string
-              example: "NONE"
-            forecasted_repayment_rate:
-              type: number
-              example: 0.98
+          additionalProperties: true
+          example:
+            bankruptcy_risk: LOW
+            tax_compliance_risk: NONE
+            forecasted_repayment_rate: 0.98
+        calculated_at:
+          type: string
+          format: date-time
+        stop_factors:
+          type: array
+          description: Список выявленных стоп-факторов из результатов проверок
+          items:
+            type: object
+            required: [check_code, provider]
+            properties:
+              check_code:
+                type: string
+              provider:
+                type: string
+              description:
+                type: string
 
     OperatorDecisionRequest:
+      oneOf:
+        - $ref: '#/components/schemas/ApproveDecisionRequest'
+        - $ref: '#/components/schemas/RejectDecisionRequest'
+        - $ref: '#/components/schemas/RevisionDecisionRequest'
+      description: >-
+        Для отклонения и возврата на доработку комментарий обязателен.
+        Идентификатор оператора определяется сервером.
+
+    ApproveDecisionRequest:
       type: object
-      required:
-        - operator_id
-        - decision_type
+      required: [decision_type]
       properties:
-        operator_id:
-          type: string
-          example: "usr_operator_minprom_042"
         decision_type:
           type: string
-          enum: [APPROVED, REJECTED]
-          example: "APPROVED"
+          enum: [APPROVED]
         comment:
           type: string
-          example: "Проект полностью соответствует критериям программы. Риски не выявлены."
+          maxLength: 5000
+      additionalProperties: false
+
+    RejectDecisionRequest:
+      type: object
+      required: [decision_type, comment]
+      properties:
+        decision_type:
+          type: string
+          enum: [REJECTED]
+        comment:
+          type: string
+          minLength: 1
+          maxLength: 5000
+      additionalProperties: false
+
+    RevisionDecisionRequest:
+      type: object
+      required: [decision_type, comment]
+      properties:
+        decision_type:
+          type: string
+          enum: [NEEDS_REVISION]
+        comment:
+          type: string
+          minLength: 1
+          maxLength: 5000
+      additionalProperties: false
+
+    OperatorDecisionResponse:
+      type: object
+      required: [decision_id, application_id, decision_type, status, decided_at]
+      properties:
+        decision_id:
+          type: integer
+          format: int64
+        application_id:
+          type: string
+          format: uuid
+        decision_type:
+          type: string
+          enum: [APPROVED, REJECTED, NEEDS_REVISION]
+        status:
+          $ref: '#/components/schemas/ApplicationStatus'
+        decided_at:
+          type: string
+          format: date-time
+
+    ErrorResponse:
+      type: object
+      required: [error_code, message]
+      properties:
+        error_code:
+          type: string
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          example: Запрос содержит некорректные данные
+        trace_id:
+          type: string
+          nullable: true
+          description: Идентификатор для поиска ошибки в журналах
+        timestamp:
+          type: string
+          format: date-time
+        details:
+          type: array
+          items:
+            $ref: '#/components/schemas/ValidationErrorDetail'
+
+    ValidationErrorDetail:
+      type: object
+      properties:
+        field:
+          type: string
+          example: requested_amount
+        code:
+          type: string
+          example: INVALID_VALUE
+        message:
+          type: string
+          example: Сумма должна быть больше нуля

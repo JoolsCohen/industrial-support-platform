@@ -3,68 +3,140 @@
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Applicant as Заявитель (Завод)
-    participant Web as Frontend (Портал)
+    actor Applicant as Заявитель
+    participant Web as Frontend
     participant GW as API Gateway
     participant Orch as Backend Orchestrator
-    participant DB as PostgreSQL DB
-    participant FNS as ЕГРЮЛ / ФНС API
-    participant AI as Модуль AI-скоринга
-    actor Operator as Оператор Минпромторга
+    participant DB as PostgreSQL
+    participant Registry as ЕГРЮЛ API
+    participant FNS as ФНС API
+    participant Fedresurs as Федресурс API
+    participant RNP as ЕИС / РНП
+    participant AI as Модуль скоринга
+    actor Operator as Оператор
+    participant Notify as Сервис уведомлений
+    participant M2 as Модуль 2
+    participant M3 as Модуль 3
 
-    %% Сценарий 1. Автозаполнение формы по ИНН
     rect rgb(240, 248, 255)
-    note over Applicant, FNS: Сценарий 1. Автозаполнение формы по ИНН
-    Applicant->>Web: Ввод ИНН (напр., 7701234567)
-    Web->>GW: GET /api/v1/companies/suggest?inn=7701234567
-    GW->>FNS: GET /egrul/v1/company?inn=7701234567
-    FNS-->>GW: 200 OK (Наименование, Адрес, Выручка, ОКВЭД)
-    GW-->>Web: 200 OK (JSON с данными компании)
-    Web-->>Applicant: Автозаполнение 70% полей формы
+        Note over Applicant,Registry: Сценарий 1. Автозаполнение по ИНН
+        Applicant->>Web: Ввод ИНН
+        Web->>GW: GET /api/v1/companies/suggest?inn=...
+        GW->>Orch: Запрос сведений о предприятии
+        Orch->>Registry: GET /egrul/v1/company?inn=...
+        Registry-->>Orch: Сведения о предприятии
+        Orch-->>GW: Данные предприятия
+        GW-->>Web: 200 OK
+        Web-->>Applicant: Отображение предзаполненной формы
     end
 
-    %% Сценарий 2. Подача заявки и фоновая проверка
     rect rgb(255, 250, 240)
-    note over Applicant, DB: Сценарий 2. Подача заявки и фоновая проверка
-    Applicant->>Web: Заполнение суммы, прикрепление проекта и отправка
-    Web->>GW: POST /api/v1/applications (Payload)
-    GW->>Orch: ProcessApplication(ApplicationDTO)
-    Orch->>DB: INSERT INTO applications (status = 'SUBMITTED')
-    Orch-->>GW: application_id = "app-8923"
-    GW-->>Web: 201 Created
-    Web-->>Applicant: Экран «Заявка принята в обработку»
+        Note over Applicant,DB: Сценарий 2. Подача и автоматическая проверка
+        Applicant->>Web: Заполнение и отправка заявки
+        Web->>GW: POST /api/v1/applications
+        GW->>Orch: Создание заявки
+        Orch->>DB: Сохранить заявку со статусом SUBMITTED
+        DB-->>Orch: application_id
+        Orch-->>GW: Заявка создана
+        GW-->>Web: 201 Created
+        Web-->>Applicant: Заявка принята
 
-    par Фоновые интеграционные запросы
+        Orch->>DB: Установить статус DATA_CHECK
+
+        Orch->>Registry: Получить юридический статус
+        Registry-->>Orch: Результат проверки
         Orch->>FNS: GET /fns/v1/tax-debts?inn=...
-        FNS-->>Orch: 200 OK (Debt: 0 RUR, Status: Active)
-    and Скоринг
-        Orch->>AI: POST /api/v1/scoring/evaluate (FinMetrics)
-        AI-->>Orch: 200 OK (Score: 92, Risk: Low, Rec: Approve)
+        FNS-->>Orch: Сведения о задолженности
+        Orch->>Fedresurs: Запрос сведений о банкротстве
+        Fedresurs-->>Orch: Результат проверки
+        Orch->>RNP: Запрос сведений о включении в РНП
+        RNP-->>Orch: Результат проверки
+
+        alt Ошибка обязательной проверки
+            Orch->>DB: Сохранить ошибку интеграции
+            Orch->>DB: Оставить заявку в DATA_CHECK
+            Orch->>Notify: Уведомить о задержке обработки
+            Notify-->>Applicant: Проверка задерживается
+        else Обнаружен стоп-фактор
+            Orch->>DB: Сохранить стоп-фактор и его код
+            Orch->>DB: Установить статус REJECTED
+            Orch->>Notify: Передать результат и основание
+            Notify-->>Applicant: Заявка отклонена
+        else Стоп-факторы отсутствуют
+            Orch->>AI: POST /api/v1/scoring/evaluate
+            AI-->>Orch: Скоринговый балл
+
+            alt Балл от 0 до 59
+                Orch->>DB: Сохранить результат скоринга
+                Orch->>DB: Установить статус REJECTED
+                Orch->>Notify: Передать результат и основание
+                Notify-->>Applicant: Заявка отклонена
+            else Балл от 60 до 79
+                Orch->>DB: Сохранить балл и результат проверки
+                Orch->>DB: Установить статус UNDER_REVIEW
+            else Балл от 80 до 100
+                Orch->>DB: Сохранить балл и рекомендацию APPROVE
+                Orch->>DB: Установить статус UNDER_REVIEW
+            else Некорректный результат скоринга
+                Orch->>DB: Сохранить ошибку скоринга
+                Orch->>Notify: Уведомить о задержке обработки
+                Notify-->>Applicant: Проверка требует дополнительной обработки
+            end
+        end
     end
 
-    alt Выявление стоп-факторов или Score менее 60
-        Orch->>DB: UPDATE status = 'REJECTED_AUTO'
-    else Score 60–79
-        Orch->>DB: UPDATE status = 'UNDER_MANUAL_REVIEW'
-    else Score 80–100 (Успешный путь)
-        Orch->>DB: UPDATE status = 'RECOMMENDED_APPROVE'
-    end
-    end
-
-    %% Сценарий 3. Просмотр дашборда и принятие решения
     rect rgb(240, 255, 240)
-    note over Operator, Applicant: Сценарий 3. Просмотр дашборда и принятие решения
-    Operator->>Web: Открытие дашборда рекомендованных заявок
-    Web->>GW: GET /api/v1/applications?status=RECOMMENDED_APPROVE
-    GW->>DB: SELECT * FROM applications WHERE status = 'RECOMMENDED_APPROVE'
-    DB-->>GW: Result Set
-    GW-->>Web: 200 OK (Список заявок)
-    Web-->>Operator: Отображение карточки (Завод X, 50 млн руб., Score 92/100)
+        Note over Operator,DB: Сценарий 3. Рассмотрение и принятие решения
 
-    Operator->>Web: Нажатие кнопки «Подтвердить решение»
-    Web->>GW: POST /api/v1/applications/app-8923/decision (Type: APPROVE)
-    GW->>Orch: ApplyDecision(app-8923, APPROVE)
-    Orch->>DB: UPDATE status = 'APPROVED', create decision_record
-    Orch-->>Applicant: Уведомление в ЛК («Заявка одобрена»)
+        Operator->>Web: Открыть очередь заявок
+        Web->>GW: GET /api/v1/applications?status=UNDER_REVIEW
+        GW->>Orch: Запрос списка заявок
+        Orch->>DB: Получить заявки для рассмотрения
+        DB-->>Orch: Список заявок
+        Orch-->>GW: Данные заявок
+        GW-->>Web: 200 OK
+        Web-->>Operator: Отображение заявок, баллов и рекомендаций
+
+        Operator->>Web: Выбрать решение
+        Web->>GW: POST /api/v1/applications/{id}/decision
+        GW->>Orch: Передать решение и основание
+
+        alt Одобрение
+            Orch->>DB: Сохранить решение APPROVED
+            Orch->>M2: Передать данные одобренного проекта
+            alt Модуль 2 принял данные
+                M2-->>Orch: Подтверждение приёма
+            else Ошибка передачи в Модуль 2
+                M2-->>Orch: Ошибка
+                Orch->>DB: Зафиксировать ошибку и повторную отправку
+            end
+
+            Orch->>M3: Передать финансовые условия
+            alt Модуль 3 принял данные
+                M3-->>Orch: Подтверждение приёма
+            else Ошибка передачи в Модуль 3
+                M3-->>Orch: Ошибка
+                Orch->>DB: Зафиксировать ошибку и повторную отправку
+            end
+
+            Orch->>Notify: Уведомить об одобрении
+            Notify-->>Applicant: Заявка одобрена
+
+        else Отклонение
+            Orch->>DB: Сохранить решение REJECTED и основание
+            Orch->>Notify: Уведомить об отклонении
+            Notify-->>Applicant: Заявка отклонена
+
+        else Возврат на доработку
+            Orch->>DB: Сохранить замечания и статус NEEDS_REVISION
+            Orch->>Notify: Передать замечания заявителю
+            Notify-->>Applicant: Заявка возвращена на доработку
+            Applicant->>Web: Исправить данные и отправить повторно
+            Web->>GW: POST /api/v1/applications/{id}/resubmit
+            GW->>Orch: Повторная отправка заявки
+            Orch->>DB: Сохранить изменения и историю
+            Orch->>DB: Установить статус SUBMITTED
+            Note over Orch,DB: Запустить проверки повторно
+        end
     end
 ```

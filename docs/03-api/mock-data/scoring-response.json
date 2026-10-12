@@ -1,27 +1,28 @@
 {
   "application_id": "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
-  "company_inn": "7701234567",
-  "evaluated_at": "2026-10-12T14:32:15Z",
-  "scoring": {
-    "total_score": 92,
-    "max_score": 100,
+  "score_value": 92,
+  "recommendation": "APPROVE",
+  "model_version": "scoring-model-1.0",
+  "calculated_at": "2026-10-12T14:32:15Z",
+  "stop_factors": [],
+  "risk_assessment": {
     "risk_category": "LOW_RISK",
-    "recommendation": "RECOMMENDED_APPROVE"
-  },
-  "stop_factors_check": {
-    "passed": true,
-    "detected_stop_factors": []
-  },
-  "score_breakdown": {
-    "financial_stability_score": 38,
-    "max_financial_stability_score": 40,
-    "credit_history_score": 28,
-    "max_credit_history_score": 30,
-    "project_feasibility_score": 26,
-    "max_project_feasibility_score": 30
-  },
-  "ai_analytics": {
-    "summary": "Предприятие демонстрирует стабильный рост выручки (+12% YoY) и достаточный уровень ликвидности. Запрашиваемая сумма субсидии (50 млн руб.) составляет 11.1% от годовой выручки, что находится в безопасной зоне.",
-    "forecasted_target_execution_rate": 0.98
+    "max_score": 100,
+    "stop_factors_check": {
+      "passed": true,
+      "detected_stop_factors": []
+    },
+    "score_breakdown": {
+      "financial_stability_score": 38,
+      "max_financial_stability_score": 40,
+      "credit_history_score": 28,
+      "max_credit_history_score": 30,
+      "project_feasibility_score": 26,
+      "max_project_feasibility_score": 30
+    },
+    "ai_analytics": {
+      "summary": "По результатам оценки модель относит предприятие к категории низкого риска. Запрашиваемая сумма субсидии (50 млн руб.) составляет около 11,1% от указанной годовой выручки (450 млн руб.).",
+      "forecasted_target_execution_rate": 0.98
+    }
   }
 }
