@@ -20,9 +20,9 @@
   },
   "financial_indicators": {
     "reporting_year": 2025,
-    "revenue": 450000000.00,
-    "net_profit": 38000000.00,
-    "tax_debt_amount": 0.00,
+    "revenue": 450000000.0,
+    "net_profit": 38000000.0,
+    "tax_debt_amount": 0.0,
     "has_tax_debt": false,
     "is_in_bankruptcy_process": false
   }

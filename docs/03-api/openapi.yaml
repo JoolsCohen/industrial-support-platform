@@ -1,11 +1,14 @@
 openapi: 3.0.3
+
 info:
-  title: ГИС «Господдержка» — API модуля распределения субсидий
+  title: ГИС «Господдержка» — API Модуля 1
+  version: 1.2.0
   description: >-
-    REST API учебного проекта для подачи заявок, получения сведений о предприятиях,
-    просмотра результатов проверок и скоринга, а также фиксации решений оператора.
-    Интеграции с внешними реестрами и смежными модулями выполняются серверной частью.
-  version: 1.1.0
+    REST API учебного проекта для работы с заявками на государственную поддержку
+    промышленных предприятий: создание черновиков, подача заявок, прикрепление
+    документов, автоматические проверки, получение результатов скоринга и фиксация
+    решения оператора. Интеграции с внешними реестрами, сервисом скоринга и Модулями
+    2 и 3 выполняются серверной частью.
 
 servers:
   - url: https://api.gospodderzhka.example/api/v1
@@ -20,28 +23,32 @@ tags:
   - name: Companies
     description: Получение сведений о предприятиях
   - name: Applications
-    description: Создание и просмотр заявок
+    description: Черновики, подача и просмотр заявок
+  - name: Documents
+    description: Загрузка и просмотр документов заявки
   - name: Checks
     description: Результаты автоматических проверок
   - name: Scoring
     description: Результаты скоринговой оценки
   - name: Decisions
-    description: Решения оператора
+    description: Решения оператора и история статусов
 
 paths:
   /companies/suggest:
     get:
       tags: [Companies]
+      operationId: suggestCompany
       summary: Получить сведения о предприятии по ИНН
       description: >-
-        Возвращает сведения из ЕГРЮЛ для предварительного заполнения формы.
-        Заявитель должен проверить полученные сведения перед отправкой заявки.
-      operationId: suggestCompany
+        Возвращает сведения из реестра для предварительного заполнения формы.
+        Проверка формата ИНН выполняется до обращения к внешнему сервису. Сервер
+        дополнительно проверяет контрольное число. Данные ответа используются как
+        сведения источника, а не как значения, которым можно доверять из клиентского запроса.
       parameters:
         - name: inn
           in: query
           required: true
-          description: ИНН российского юридического лица (10 цифр)
+          description: ИНН российского юридического лица, 10 цифр.
           schema:
             type: string
             pattern: '^[0-9]{10}$'
@@ -55,23 +62,65 @@ paths:
                 $ref: '#/components/schemas/CompanySuggestResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '502':
-          $ref: '#/components/responses/BadGateway'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+
+  /applications/drafts:
+    post:
+      tags: [Applications]
+      operationId: createApplicationDraft
+      summary: Создать черновик заявки
+      description: >-
+        Создаёт черновик со статусом DRAFT. ИНН необходим для связи черновика с
+        предприятием. Остальные поля можно заполнить или изменить позднее.
+        Успешное создание черновика не запускает автоматические проверки.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplicationDraftCreateRequest'
+      responses:
+        '201':
+          description: Черновик создан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationDraftResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
         default:
           $ref: '#/components/responses/UnexpectedError'
 
   /applications:
     post:
       tags: [Applications]
-      summary: Создать и отправить заявку
+      operationId: createAndSubmitApplication
+      summary: Создать и отправить полностью заполненную заявку
       description: >-
-        Создаёт заявку, сохраняет её и запускает асинхронную обработку.
-        Автоматические проверки выполняются после принятия заявки.
-      operationId: createApplication
+        Создаёт заявку и сразу отправляет её в обработку. Для постепенного заполнения
+        используйте создание черновика, PATCH /applications/{id}, а затем
+        POST /applications/{id}/submit. Сервер определяет предприятие по ИНН и
+        получает подтверждаемые сведения из внешнего источника. company_name, KPP,
+        ОГРН и другие реестровые данные не принимаются как доверенные значения клиента.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -86,25 +135,30 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApplicationCreateResponse'
+                $ref: '#/components/schemas/ApplicationSubmissionResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
         '409':
           $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/ValidationError'
+        '502':
+          $ref: '#/components/responses/BadGateway'
         default:
           $ref: '#/components/responses/UnexpectedError'
 
     get:
       tags: [Applications]
+      operationId: listApplications
       summary: Получить список доступных заявок
       description: >-
-        Возвращает список заявок, доступных авторизованному пользователю
-        в соответствии с его ролью и полномочиями.
-      operationId: listApplications
+        Возвращает заявки, доступные авторизованному пользователю согласно его роли
+        и полномочиям. Доступ к заявкам заявителя ограничивается его предприятиями;
+        оператор получает только заявки, разрешённые его полномочиями.
       parameters:
         - name: status
           in: query
@@ -134,6 +188,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -142,12 +198,12 @@ paths:
           $ref: '#/components/responses/UnexpectedError'
 
   /applications/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ApplicationId'
     get:
       tags: [Applications]
-      summary: Получить карточку заявки
       operationId: getApplication
-      parameters:
-        - $ref: '#/components/parameters/ApplicationId'
+      summary: Получить карточку заявки
       responses:
         '200':
           description: Карточка заявки
@@ -164,14 +220,302 @@ paths:
         default:
           $ref: '#/components/responses/UnexpectedError'
 
+    patch:
+      tags: [Applications]
+      operationId: updateApplication
+      summary: Изменить черновик или заявку, возвращённую на доработку
+      description: >-
+        Изменение разрешено только для статусов DRAFT и NEEDS_REVISION и только
+        пользователю, уполномоченному редактировать эту заявку. ИНН, реестровые
+        сведения и текущий статус нельзя изменить через этот запрос.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplicationPatchRequest'
+      responses:
+        '200':
+          description: Заявка обновлена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationDetails'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Редактирование запрещено для текущего статуса заявки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+
+  /applications/{id}/submit:
+    post:
+      tags: [Applications]
+      operationId: submitApplicationDraft
+      summary: Отправить черновик на рассмотрение
+      description: >-
+        Проверяет обязательные поля и документы согласно требованиям программы.
+        При успешной валидации переводит заявку из DRAFT в SUBMITTED и запускает
+        автоматические проверки.
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Отправка принята, обработка выполняется асинхронно
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationSubmissionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Заявка не находится в статусе DRAFT
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+
+  /applications/{id}/resubmit:
+    post:
+      tags: [Applications]
+      operationId: resubmitApplication
+      summary: Повторно отправить заявку после доработки
+      description: >-
+        Повторно отправляет сохранённую исправленную заявку в обработку. Заявка
+        должна находиться в статусе NEEDS_REVISION. Сервер повторно валидирует данные
+        и запускает необходимые проверки. История изменений и предыдущие результаты
+        не удаляются.
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Повторная отправка принята в обработку
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationSubmissionResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Заявка не находится в статусе NEEDS_REVISION
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+
+  /applications/{id}/documents:
+    parameters:
+      - $ref: '#/components/parameters/ApplicationId'
+    get:
+      tags: [Documents]
+      operationId: listApplicationDocuments
+      summary: Получить список документов заявки
+      responses:
+        '200':
+          description: Список документов
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DocumentMetadata'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+
+    post:
+      tags: [Documents]
+      operationId: uploadApplicationDocument
+      summary: Загрузить документ к заявке
+      description: >-
+        Загружает файл и сохраняет его метаданные. Допустимые типы файлов и максимальный
+        размер должны задаваться согласованной политикой конфигурации. Загрузка разрешена
+        только для заявки, которую пользователь вправе редактировать, со статусом DRAFT
+        или NEEDS_REVISION. Файл проходит проверку типа, размера и целостности.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/DocumentUploadRequest'
+      responses:
+        '201':
+          description: Документ загружен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentMetadata'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Загрузка запрещена для текущего статуса заявки либо запрос дублирует другую операцию
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Размер файла превышает установленный предел
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Тип файла не поддерживается
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+
+  /applications/{id}/documents/{documentId}:
+    parameters:
+      - $ref: '#/components/parameters/ApplicationId'
+      - name: documentId
+        in: path
+        required: true
+        description: Идентификатор документа
+        schema:
+          type: integer
+          format: int64
+    get:
+      tags: [Documents]
+      operationId: getApplicationDocument
+      summary: Получить метаданные документа
+      responses:
+        '200':
+          description: Метаданные документа
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentMetadata'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+
+    delete:
+      tags: [Documents]
+      operationId: deleteApplicationDocument
+      summary: Удалить прикреплённый документ
+      description: >-
+        Удаление разрешено только для заявки в статусе DRAFT или NEEDS_REVISION
+        и только пользователю, имеющему право редактировать заявку. Событие удаления
+        регистрируется в журнале аудита.
+      responses:
+        '204':
+          description: Документ удалён
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Удаление запрещено для текущего статуса заявки
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+
+  /applications/{id}/documents/{documentId}/content:
+    get:
+      tags: [Documents]
+      operationId: downloadApplicationDocument
+      summary: Скачать содержимое документа
+      description: >-
+        Возвращает содержимое документа только пользователю с правом просмотра
+        соответствующей заявки. В журнале доступа фиксируется факт скачивания.
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+        - name: documentId
+          in: path
+          required: true
+          description: Идентификатор документа
+          schema:
+            type: integer
+            format: int64
+      responses:
+        '200':
+          description: Содержимое файла
+          headers:
+            Content-Disposition:
+              description: Имя файла для скачивания
+              schema:
+                type: string
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        default:
+          $ref: '#/components/responses/UnexpectedError'
+
   /applications/{id}/checks:
     get:
       tags: [Checks]
-      summary: Получить историю автоматических проверок заявки
-      description: >-
-        Возвращает результаты проверок, включая технические ошибки и повторные попытки.
-        Ошибка интеграции не считается отрицательным результатом проверки.
       operationId: listApplicationChecks
+      summary: Получить историю проверок заявки
+      description: >-
+        Возвращает результаты проверок, включая ошибки и повторные попытки. Техническая
+        ошибка внешнего сервиса не интерпретируется как отрицательный бизнес-результат.
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
       responses:
@@ -195,8 +539,8 @@ paths:
   /applications/{id}/scoring:
     get:
       tags: [Scoring]
-      summary: Получить результат скоринговой оценки
       operationId: getScoringResult
+      summary: Получить результат скоринговой оценки
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
       responses:
@@ -224,12 +568,13 @@ paths:
   /applications/{id}/decision:
     post:
       tags: [Decisions]
+      operationId: decideApplication
       summary: Зафиксировать решение оператора
       description: >-
         Сохраняет решение уполномоченного оператора и обновляет статус заявки.
-        Идентификатор оператора берётся сервером из контекста аутентификации.
-        Для отклонения и возврата на доработку необходимо указать комментарий.
-      operationId: decideApplication
+        Операция допустима только для заявки в статусе UNDER_REVIEW. Идентификатор
+        оператора берётся сервером из контекста аутентификации. Для отклонения и
+        возврата на доработку основание обязательно.
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -265,44 +610,28 @@ paths:
         default:
           $ref: '#/components/responses/UnexpectedError'
 
-  /applications/{id}/resubmit:
-    post:
-      tags: [Applications]
-      summary: Повторно отправить заявку после доработки
-      description: >-
-        Сохраняет исправленные данные, фиксирует изменение и запускает необходимые
-        проверки повторно. Допускается только для заявки в статусе NEEDS_REVISION.
-      operationId: resubmitApplication
+  /applications/{id}/status-history:
+    get:
+      tags: [Decisions]
+      operationId: listApplicationStatusHistory
+      summary: Получить историю статусов заявки
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
-        - $ref: '#/components/parameters/IdempotencyKey'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ApplicationResubmissionRequest'
       responses:
-        '202':
-          description: Повторная отправка принята в обработку
+        '200':
+          description: История переходов статусов
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ApplicationCreateResponse'
+                type: array
+                items:
+                  $ref: '#/components/schemas/StatusHistoryItem'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
-        '409':
-          description: Заявка не находится в статусе NEEDS_REVISION
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '422':
-          $ref: '#/components/responses/ValidationError'
         default:
           $ref: '#/components/responses/UnexpectedError'
 
@@ -326,13 +655,15 @@ components:
     IdempotencyKey:
       name: Idempotency-Key
       in: header
-      required: false
+      required: true
       description: >-
-        Необязательный ключ для безопасного повтора запроса без дублирования операции.
-        Сервер должен сохранять и проверять ключ в пределах согласованного срока.
+        Уникальный ключ логической операции. Повтор запроса с тем же ключом и тем же
+        содержимым должен возвращать исходный результат; повторное использование ключа
+        с другим содержимым должно приводить к 409 Conflict. Срок хранения ключей
+        задаётся политикой реализации.
       schema:
         type: string
-        minLength: 1
+        minLength: 8
         maxLength: 255
 
   responses:
@@ -342,42 +673,49 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+
     Unauthorized:
       description: Требуется аутентификация
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+
     Forbidden:
-      description: Недостаточно прав для выполнения операции
+      description: Недостаточно прав для операции
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+
     NotFound:
       description: Ресурс не найден или недоступен пользователю
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+
     Conflict:
-      description: Конфликт состояния или повторного запроса
+      description: Конфликт состояния ресурса или ключа идемпотентности
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+
     ValidationError:
-      description: Ошибка валидации данных
+      description: Ошибка проверки данных или бизнес-правил
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/ErrorResponse'
+            $ref: '#/components/schemas/ValidationErrorResponse'
+
     BadGateway:
-      description: Внешний сервис вернул ошибку или недопустимый ответ
+      description: Внешний сервис не вернул корректный ответ
       content:
         application/json:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
+
     UnexpectedError:
       description: Непредвиденная ошибка сервера
       content:
@@ -388,7 +726,6 @@ components:
   schemas:
     ApplicationStatus:
       type: string
-      description: Текущий статус заявки
       enum:
         - DRAFT
         - SUBMITTED
@@ -397,58 +734,233 @@ components:
         - UNDER_REVIEW
         - APPROVED
         - REJECTED
+      description: Бизнес-статус заявки, не рекомендация скоринга
+
+    FNSRegistryResponse:
+      type: object
+      description: >-
+        Внутренний контракт mock-ответа реестра. Используется для описания
+        интеграционного примера fns-response.json и не является публичным endpoint API.
+      required: [query_inn, status, company_details]
+      properties:
+        query_inn:
+          type: string
+          pattern: '^[0-9]{10}$'
+        status:
+          type: string
+          description: Статус юридического лица, полученный из внешнего источника
+        company_details:
+          type: object
+          required: [inn, full_name]
+          properties:
+            inn:
+              type: string
+              pattern: '^[0-9]{10}$'
+            kpp:
+              type: string
+              nullable: true
+              pattern: '^[0-9]{9}$'
+            ogrn:
+              type: string
+              nullable: true
+              pattern: '^[0-9]{13}$'
+            full_name:
+              type: string
+            short_name:
+              type: string
+              nullable: true
+            registration_date:
+              type: string
+              format: date
+              nullable: true
+            legal_address:
+              type: string
+              nullable: true
+            ceo:
+              type: object
+              properties:
+                name:
+                  type: string
+                inn:
+                  type: string
+                  pattern: '^[0-9]{12}$'
+            okved_main:
+              $ref: '#/components/schemas/Okved'
+        financial_indicators:
+          $ref: '#/components/schemas/FinancialIndicators'
+
+    ApplicationDraftResponse:
+      allOf:
+        - $ref: '#/components/schemas/ApplicationDetails'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [DRAFT]
 
     CompanySuggestResponse:
       type: object
-      required: [inn, name]
+      required: [inn, status, company_details]
       properties:
         inn:
           type: string
           pattern: '^[0-9]{10}$'
           example: '7701234567'
-        kpp:
+        status:
           type: string
-          nullable: true
-          example: '770101001'
-        ogrn:
+          enum: [ACTIVE, IN_LIQUIDATION, LIQUIDATED, OTHER]
+          description: Юридический статус в нормализованном виде для учебного API
+        company_details:
+          type: object
+          required: [inn, full_name]
+          properties:
+            inn:
+              type: string
+              pattern: '^[0-9]{10}$'
+            kpp:
+              type: string
+              nullable: true
+              pattern: '^[0-9]{9}$'
+            ogrn:
+              type: string
+              nullable: true
+              pattern: '^[0-9]{13}$'
+            full_name:
+              type: string
+            short_name:
+              type: string
+              nullable: true
+            registration_date:
+              type: string
+              format: date
+              nullable: true
+            legal_address:
+              type: string
+              nullable: true
+            okved_main:
+              $ref: '#/components/schemas/Okved'
+        financial_indicators:
+          $ref: '#/components/schemas/FinancialIndicators'
+
+    Okved:
+      type: object
+      properties:
+        code:
           type: string
-          nullable: true
-          example: '1027700123456'
+          example: '28.11'
         name:
           type: string
-          example: ООО Завод Промышленных Машин
-        legal_address:
-          type: string
           nullable: true
-          example: '101000, г. Москва, ул. Заводская, д. 12'
-        okved:
-          type: string
+
+    FinancialIndicators:
+      type: object
+      properties:
+        reporting_year:
+          type: integer
+          minimum: 1900
           nullable: true
-          example: '28.11'
-        revenue_last_year:
+        revenue:
           type: number
           format: double
           minimum: 0
           nullable: true
-          example: 450000000.00
+        net_profit:
+          type: number
+          format: double
+          nullable: true
+        tax_debt_amount:
+          type: number
+          format: double
+          minimum: 0
+          nullable: true
+        has_tax_debt:
+          type: boolean
+          nullable: true
+        is_in_bankruptcy_process:
+          type: boolean
+          nullable: true
 
-    ApplicationCreateRequest:
+    ApplicantContact:
       type: object
-      required: [inn, subsidy_type, requested_amount, project_title]
+      required: [full_name, email, phone]
+      properties:
+        full_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        email:
+          type: string
+          format: email
+          maxLength: 254
+        phone:
+          type: string
+          minLength: 5
+          maxLength: 30
+
+    ApplicationDraftCreateRequest:
+      type: object
+      required: [inn]
       properties:
         inn:
           type: string
           pattern: '^[0-9]{10}$'
+          description: >-
+            ИНН предприятия. Сервер также проверяет контрольное число и связывает
+            черновик с подтверждённым профилем предприятия.
+          example: '7701234567'
+        subsidy_type:
+          type: string
+          maxLength: 100
+          nullable: true
+        requested_amount:
+          type: number
+          format: double
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 500000000
+          nullable: true
+        project_title:
+          type: string
+          maxLength: 255
+          nullable: true
+        project_description:
+          type: string
+          nullable: true
+        implementation_period_months:
+          type: integer
+          minimum: 1
+          nullable: true
+        planned_jobs_created:
+          type: integer
+          minimum: 0
+          nullable: true
+        applicant_contact:
+          $ref: '#/components/schemas/ApplicantContact'
+
+    ApplicationCreateRequest:
+      type: object
+      required:
+        - inn
+        - subsidy_type
+        - requested_amount
+        - project_title
+      properties:
+        inn:
+          type: string
+          pattern: '^[0-9]{10}$'
+          description: Сервер проверяет контрольное число ИНН
           example: '7701234567'
         subsidy_type:
           type: string
           minLength: 1
           maxLength: 100
-          example: Субсидирование процентной ставки
+          example: Субсидирование процентной ставки по кредитам на модернизацию
         requested_amount:
           type: number
           format: double
-          minimum: 0.01
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 500000000
           example: 50000000.00
         project_title:
           type: string
@@ -458,11 +970,21 @@ components:
         project_description:
           type: string
           nullable: true
-          example: Закупка высокоточных станков с ЧПУ отечественного производства
+          example: Приобретение и пусконаладка оборудования с ЧПУ для автоматизации процессов литья.
+        implementation_period_months:
+          type: integer
+          minimum: 1
+          example: 24
+        planned_jobs_created:
+          type: integer
+          minimum: 0
+          example: 15
+        applicant_contact:
+          $ref: '#/components/schemas/ApplicantContact'
 
-    ApplicationResubmissionRequest:
+    ApplicationPatchRequest:
       type: object
-      required: [subsidy_type, requested_amount, project_title]
+      minProperties: 1
       properties:
         subsidy_type:
           type: string
@@ -471,7 +993,9 @@ components:
         requested_amount:
           type: number
           format: double
-          minimum: 0.01
+          minimum: 0
+          exclusiveMinimum: true
+          maximum: 500000000
         project_title:
           type: string
           minLength: 1
@@ -479,8 +1003,16 @@ components:
         project_description:
           type: string
           nullable: true
+        implementation_period_months:
+          type: integer
+          minimum: 1
+        planned_jobs_created:
+          type: integer
+          minimum: 0
+        applicant_contact:
+          $ref: '#/components/schemas/ApplicantContact'
 
-    ApplicationCreateResponse:
+    ApplicationSubmissionResponse:
       type: object
       required: [application_id, application_number, status, created_at]
       properties:
@@ -492,11 +1024,15 @@ components:
           type: string
           example: APP-2026-008923
         status:
-          $ref: '#/components/schemas/ApplicationStatus'
+          type: string
+          enum: [SUBMITTED]
+          description: Первоначальный статус после успешной отправки
         created_at:
           type: string
           format: date-time
-          example: '2026-10-12T14:30:00Z'
+        message:
+          type: string
+          example: Заявка принята в обработку
 
     ApplicationListResponse:
       type: object
@@ -518,7 +1054,7 @@ components:
 
     ApplicationListItem:
       type: object
-      required: [application_id, application_number, requested_amount, status, created_at]
+      required: [application_id, application_number, status, created_at]
       properties:
         application_id:
           type: string
@@ -530,15 +1066,14 @@ components:
         requested_amount:
           type: number
           format: double
+          nullable: true
         score_value:
           type: integer
           minimum: 0
           maximum: 100
           nullable: true
         recommendation:
-          type: string
-          enum: [REJECT, MANUAL_REVIEW, APPROVE]
-          nullable: true
+          $ref: '#/components/schemas/ScoringRecommendation'
         status:
           $ref: '#/components/schemas/ApplicationStatus'
         created_at:
@@ -549,10 +1084,22 @@ components:
       allOf:
         - $ref: '#/components/schemas/ApplicationListItem'
         - type: object
+          required: [company_inn]
           properties:
             company_inn:
               type: string
               pattern: '^[0-9]{10}$'
+            kpp:
+              type: string
+              nullable: true
+            ogrn:
+              type: string
+              nullable: true
+            legal_address:
+              type: string
+              nullable: true
+            okved_main:
+              $ref: '#/components/schemas/Okved'
             subsidy_type:
               type: string
             project_title:
@@ -560,6 +1107,16 @@ components:
             project_description:
               type: string
               nullable: true
+            implementation_period_months:
+              type: integer
+              minimum: 1
+              nullable: true
+            planned_jobs_created:
+              type: integer
+              minimum: 0
+              nullable: true
+            applicant_contact:
+              $ref: '#/components/schemas/ApplicantContact'
             updated_at:
               type: string
               format: date-time
@@ -585,8 +1142,8 @@ components:
           enum: [PENDING, PASSED, STOP_FACTOR, ERROR]
         result_data:
           type: object
-          nullable: true
           additionalProperties: true
+          nullable: true
         error_code:
           type: string
           nullable: true
@@ -604,6 +1161,11 @@ components:
           type: string
           format: date-time
 
+    ScoringRecommendation:
+      type: string
+      enum: [REJECT, MANUAL_REVIEW, APPROVE]
+      description: Рекомендация скоринга, не бизнес-статус заявки
+
     ScoringResult:
       type: object
       required: [application_id, score_value, recommendation, calculated_at]
@@ -617,36 +1179,93 @@ components:
           maximum: 100
           example: 92
         recommendation:
-          type: string
-          enum: [REJECT, MANUAL_REVIEW, APPROVE]
-          example: APPROVE
+          $ref: '#/components/schemas/ScoringRecommendation'
         model_version:
           type: string
           nullable: true
           example: scoring-model-1.0
-        risk_assessment:
-          type: object
-          additionalProperties: true
-          example:
-            bankruptcy_risk: LOW
-            tax_compliance_risk: NONE
-            forecasted_repayment_rate: 0.98
         calculated_at:
           type: string
           format: date-time
         stop_factors:
           type: array
-          description: Список выявленных стоп-факторов из результатов проверок
           items:
-            type: object
-            required: [check_code, provider]
-            properties:
-              check_code:
-                type: string
-              provider:
-                type: string
-              description:
-                type: string
+            $ref: '#/components/schemas/StopFactor'
+        risk_assessment:
+          $ref: '#/components/schemas/RiskAssessment'
+
+    StopFactor:
+      type: object
+      required: [check_code, provider]
+      properties:
+        check_code:
+          type: string
+          example: BR-STOP-01
+        provider:
+          type: string
+          example: FNS
+        description:
+          type: string
+
+    RiskAssessment:
+      type: object
+      properties:
+        risk_category:
+          type: string
+          nullable: true
+          example: LOW_RISK
+        max_score:
+          type: integer
+          minimum: 1
+          maximum: 100
+          nullable: true
+          example: 100
+        stop_factors_check:
+          type: object
+          properties:
+            passed:
+              type: boolean
+            detected_stop_factors:
+              type: array
+              items:
+                $ref: '#/components/schemas/StopFactor'
+        score_breakdown:
+          $ref: '#/components/schemas/ScoreBreakdown'
+        ai_analytics:
+          $ref: '#/components/schemas/AIAnalytics'
+
+    ScoreBreakdown:
+      type: object
+      properties:
+        financial_stability_score:
+          type: integer
+          minimum: 0
+        max_financial_stability_score:
+          type: integer
+          minimum: 0
+        credit_history_score:
+          type: integer
+          minimum: 0
+        max_credit_history_score:
+          type: integer
+          minimum: 0
+        project_feasibility_score:
+          type: integer
+          minimum: 0
+        max_project_feasibility_score:
+          type: integer
+          minimum: 0
+
+    AIAnalytics:
+      type: object
+      properties:
+        summary:
+          type: string
+        forecasted_target_execution_rate:
+          type: number
+          minimum: 0
+          maximum: 1
+          nullable: true
 
     OperatorDecisionRequest:
       oneOf:
@@ -654,8 +1273,8 @@ components:
         - $ref: '#/components/schemas/RejectDecisionRequest'
         - $ref: '#/components/schemas/RevisionDecisionRequest'
       description: >-
-        Для отклонения и возврата на доработку комментарий обязателен.
-        Идентификатор оператора определяется сервером.
+        Для отклонения и возврата на доработку комментарий обязателен. Для одобрения
+        комментарий необязателен.
 
     ApproveDecisionRequest:
       type: object
@@ -667,7 +1286,7 @@ components:
         comment:
           type: string
           maxLength: 5000
-      additionalProperties: false
+          nullable: true
 
     RejectDecisionRequest:
       type: object
@@ -680,7 +1299,6 @@ components:
           type: string
           minLength: 1
           maxLength: 5000
-      additionalProperties: false
 
     RevisionDecisionRequest:
       type: object
@@ -693,7 +1311,6 @@ components:
           type: string
           minLength: 1
           maxLength: 5000
-      additionalProperties: false
 
     OperatorDecisionResponse:
       type: object
@@ -714,6 +1331,102 @@ components:
           type: string
           format: date-time
 
+    DocumentUploadRequest:
+      type: object
+      required: [file, document_type]
+      properties:
+        file:
+          type: string
+          format: binary
+          description: Файл документа; размер и допустимость типа проверяются сервером
+        document_type:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Тип документа согласно справочнику приложения
+          example: PROJECT_PLAN
+        description:
+          type: string
+          maxLength: 1000
+          nullable: true
+
+    DocumentMetadata:
+      type: object
+      required:
+        - document_id
+        - document_type
+        - file_name
+        - mime_type
+        - size_bytes
+        - checksum_sha256
+        - uploaded_by
+        - uploaded_at
+        - validation_status
+      properties:
+        document_id:
+          type: integer
+          format: int64
+        document_type:
+          type: string
+        file_name:
+          type: string
+        mime_type:
+          type: string
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        checksum_sha256:
+          type: string
+          pattern: '^[a-fA-F0-9]{64}$'
+        description:
+          type: string
+          nullable: true
+        uploaded_by:
+          type: string
+        uploaded_at:
+          type: string
+          format: date-time
+        validation_status:
+          type: string
+          enum: [PENDING, ACCEPTED, REJECTED, ERROR]
+        validation_error:
+          type: string
+          nullable: true
+
+    StatusHistoryItem:
+      type: object
+      required: [history_id, new_status, changed_by_type, changed_at]
+      properties:
+        history_id:
+          type: integer
+          format: int64
+        previous_status:
+          type: string
+          nullable: true
+          enum:
+            - DRAFT
+            - SUBMITTED
+            - DATA_CHECK
+            - NEEDS_REVISION
+            - UNDER_REVIEW
+            - APPROVED
+            - REJECTED
+        new_status:
+          $ref: '#/components/schemas/ApplicationStatus'
+        changed_by_type:
+          type: string
+          enum: [APPLICANT, OPERATOR, SYSTEM]
+        changed_by_id:
+          type: string
+          nullable: true
+        reason:
+          type: string
+          nullable: true
+        changed_at:
+          type: string
+          format: date-time
+
     ErrorResponse:
       type: object
       required: [error_code, message]
@@ -726,7 +1439,6 @@ components:
           example: Запрос содержит некорректные данные
         trace_id:
           type: string
-          nullable: true
           description: Идентификатор для поиска ошибки в журналах
         timestamp:
           type: string
@@ -736,15 +1448,26 @@ components:
           items:
             $ref: '#/components/schemas/ValidationErrorDetail'
 
+    ValidationErrorResponse:
+      allOf:
+        - $ref: '#/components/schemas/ErrorResponse'
+        - type: object
+          properties:
+            details:
+              type: array
+              items:
+                $ref: '#/components/schemas/ValidationErrorDetail'
+
     ValidationErrorDetail:
       type: object
+      required: [code, message]
       properties:
         field:
           type: string
           example: requested_amount
         code:
           type: string
-          example: INVALID_VALUE
+          example: BR-VAL-02
         message:
           type: string
-          example: Сумма должна быть больше нуля
+          example: Запрашиваемая сумма должна быть больше нуля и не превышать 500 000 000 рублей
