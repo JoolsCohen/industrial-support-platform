@@ -1,0 +1,250 @@
+openapi: 3.0.3
+info:
+  title: ГИС «Господдержка» — API модуля распределения субсидий
+  description: REST API для подачи заявок, автозаполнения по ИНН, автоматического скоринга и принятия решений оператором.
+  version: 1.0.0
+servers:
+  - url: https://api.gospodderzhka.gov.ru/v1
+    description: Production API Server
+  - url: http://localhost:8080/v1
+    description: Local Mock Server
+
+paths:
+  /companies/suggest:
+    get:
+      summary: Автоподтягивание данных компании из ЕГРЮЛ по ИНН
+      description: Возвращает данные профиля юрлица из внешнего реестра ФНС для автозаполнения 70% полей формы.
+      parameters:
+        - name: inn
+          in: query
+          required: true
+          description: ИНН юридического лица (10 цифр)
+          schema:
+            type: string
+            pattern: '^\d{10}$'
+            example: "7701234567"
+      responses:
+        '200':
+          description: Данные компании успешно найдены
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CompanySuggestResponse'
+        '400':
+          description: Некорректный формат ИНН
+        '404':
+          description: Компания с указанным ИНН не найдена в ЕГРЮЛ
+
+  /applications:
+    post:
+      summary: Подача заявки на получение субсидии
+      description: Создает новую заявку и запускает асинхронный процесс проверки стоп-факторов и AI-скоринга.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplicationCreateRequest'
+      responses:
+        '201':
+          description: Заявка успешно создана и принята в обработку
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationCreateResponse'
+        '422':
+          description: Ошибка валидации бизнес-правил (например, неподдерживаемый ОКВЭД)
+
+    get:
+      summary: Получение списка заявок для дашборда оператора
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Фильтр по статусу заявки
+          schema:
+            type: string
+            enum: [SUBMITTED, UNDER_MANUAL_REVIEW, RECOMMENDED_APPROVE, APPROVED, REJECTED_AUTO, REJECTED_MANUAL]
+      responses:
+        '200':
+          description: Список заявок
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ApplicationListItem'
+
+  /applications/{id}/scoring:
+    get:
+      summary: Получение аналитического заключения скоринга
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Детальный отчет по рискам и скорингу
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScoringResult'
+
+  /applications/{id}/decision:
+    post:
+      summary: Фиксация решения оператора Минпромторга
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OperatorDecisionRequest'
+      responses:
+        '200':
+          description: Решение успешно зафиксировано, статус заявки обновлен
+
+components:
+  schemas:
+    CompanySuggestResponse:
+      type: object
+      properties:
+        inn:
+          type: string
+          example: "7701234567"
+        kpp:
+          type: string
+          example: "770101001"
+        ogrn:
+          type: string
+          example: "1027700123456"
+        name:
+          type: string
+          example: "ООО \"Завод Промышленных Машин\""
+        legal_address:
+          type: string
+          example: "101000, г. Москва, ул. Заводская, д. 12"
+        ceo_name:
+          type: string
+          example: "Иванов Пётр Сергеевич"
+        okved:
+          type: string
+          example: "28.11"
+        revenue_last_year:
+          type: number
+          example: 450000000.00
+
+    ApplicationCreateRequest:
+      type: object
+      required:
+        - inn
+        - subsidy_type
+        - requested_amount
+        - project_title
+      properties:
+        inn:
+          type: string
+          example: "7701234567"
+        subsidy_type:
+          type: string
+          example: "Субсидирование процентной ставки"
+        requested_amount:
+          type: number
+          example: 50000000.00
+        project_title:
+          type: string
+          example: "Модернизация литейного цеха №3"
+        project_description:
+          type: string
+          example: "Закупка высокоточных станков с ЧПУ отечественного производства"
+
+    ApplicationCreateResponse:
+      type: object
+      properties:
+        application_id:
+          type: string
+          format: uuid
+          example: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+        application_number:
+          type: string
+          example: "APP-2026-008923"
+        status:
+          type: string
+          example: "SUBMITTED"
+        created_at:
+          type: string
+          format: date-time
+          example: "2026-10-12T14:30:00Z"
+
+    ApplicationListItem:
+      type: object
+      properties:
+        application_id:
+          type: string
+          format: uuid
+        application_number:
+          type: string
+        company_name:
+          type: string
+        requested_amount:
+          type: number
+        score_value:
+          type: integer
+        status:
+          type: string
+
+    ScoringResult:
+      type: object
+      properties:
+        application_id:
+          type: string
+          format: uuid
+        score_value:
+          type: integer
+          example: 92
+        recommendation:
+          type: string
+          example: "RECOMMENDED_APPROVE"
+        stop_factors:
+          type: array
+          items:
+            type: string
+          example: []
+        risk_assessment:
+          type: object
+          properties:
+            bankruptcy_risk:
+              type: string
+              example: "LOW"
+            tax_compliance_risk:
+              type: string
+              example: "NONE"
+            forecasted_repayment_rate:
+              type: number
+              example: 0.98
+
+    OperatorDecisionRequest:
+      type: object
+      required:
+        - operator_id
+        - decision_type
+      properties:
+        operator_id:
+          type: string
+          example: "usr_operator_minprom_042"
+        decision_type:
+          type: string
+          enum: [APPROVED, REJECTED]
+          example: "APPROVED"
+        comment:
+          type: string
+          example: "Проект полностью соответствует критериям программы. Риски не выявлены."

@@ -1,0 +1,18 @@
+{
+  "inn": "7701234567",
+  "kpp": "770101001",
+  "company_name": "ООО «Завод Промышленных Машин»",
+  "subsidy_type": "Субсидирование процентной ставки по кредитам на модернизацию",
+  "requested_amount": 50000000.00,
+  "project_details": {
+    "title": "Модернизация литейного цеха №3",
+    "description": "Приобретение и пусконаладка высокотехнологичного оборудования с ЧПУ для автоматизации процессов литья.",
+    "implementation_period_months": 24,
+    "planned_jobs_created": 15
+  },
+  "applicant_contact": {
+    "full_name": "Иванов Пётр Сергеевич",
+    "email": "p.ivanov@zavodpm.ru",
+    "phone": "+79991234567"
+  }
+}
